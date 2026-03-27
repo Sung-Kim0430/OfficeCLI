@@ -25,6 +25,9 @@ test-samples/
 ## Diff
 diff/
 
+## Playwright visual tests (local only)
+tests/OfficeCli.Playwright/
+
 ## Claude
 .claude/
 CLAUDE.md
