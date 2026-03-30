@@ -228,8 +228,8 @@ public partial class WordHandler
             fieldPara.AppendChild(fieldRunSep);
             fieldPara.AppendChild(fieldRunResult);
             fieldPara.AppendChild(fieldRunEnd);
-            var fParaIdx = body.Elements<Paragraph>().TakeWhile(p => p != fieldPara).Count();
-            resultPath = $"/body/p[{fParaIdx + 1}]/r[{GetAllRuns(fieldPara).Count - 4}]";
+            var runIdx = GetAllRuns(fieldPara).Count - 4;
+            resultPath = $"{parentPath}/r[{runIdx}]";
         }
         else
         {

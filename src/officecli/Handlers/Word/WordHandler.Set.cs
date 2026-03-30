@@ -449,16 +449,16 @@ public partial class WordHandler
                         break;
                     }
                     case "margintop":
-                        EnsureSectPrPageMargin(sectPr).Top = ParseHelpers.SafeParseInt(value, "margintop");
+                        EnsureSectPrPageMargin(sectPr).Top = (int)ParseTwips(value);
                         break;
                     case "marginbottom":
-                        EnsureSectPrPageMargin(sectPr).Bottom = ParseHelpers.SafeParseInt(value, "marginbottom");
+                        EnsureSectPrPageMargin(sectPr).Bottom = (int)ParseTwips(value);
                         break;
                     case "marginleft":
-                        EnsureSectPrPageMargin(sectPr).Left = ParseHelpers.SafeParseUint(value, "marginleft");
+                        EnsureSectPrPageMargin(sectPr).Left = ParseTwips(value);
                         break;
                     case "marginright":
-                        EnsureSectPrPageMargin(sectPr).Right = ParseHelpers.SafeParseUint(value, "marginright");
+                        EnsureSectPrPageMargin(sectPr).Right = ParseTwips(value);
                         break;
                     case "columns" or "cols" or "col":
                     {
