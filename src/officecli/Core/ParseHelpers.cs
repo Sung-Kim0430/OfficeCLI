@@ -81,6 +81,10 @@ public static class ParseHelpers
         // 8-char ARGB (e.g. "FFFF0000") → strip alpha prefix → "#FF0000"
         if (rawValue.Length == 8 && rawValue.All(char.IsAsciiHexDigit))
             return "#" + rawValue[2..].ToUpperInvariant();
+        // Try resolving named colors (e.g. "silver" → "#C0C0C0")
+        var resolved = TryResolveColorInput(rawValue);
+        if (resolved != null)
+            return "#" + resolved.ToUpperInvariant();
         return rawValue; // scheme colors ("accent1"), "none", "auto", etc.
     }
 
@@ -126,6 +130,8 @@ public static class ParseHelpers
             throw new ArgumentException($"Invalid font size: '{value}'. Comma is not allowed — use '.' as decimal separator (e.g., '10.5').");
         if (!double.TryParse(trimmed, CultureInfo.InvariantCulture, out var result) || double.IsNaN(result) || double.IsInfinity(result))
             throw new ArgumentException($"Invalid font size: '{value}'. Expected a finite number (e.g., '12', '10.5', '14pt').");
+        if (result <= 0)
+            throw new ArgumentException($"Invalid font size: '{value}'. Font size must be greater than 0.");
         return result;
     }
 
