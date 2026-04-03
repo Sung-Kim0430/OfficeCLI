@@ -203,7 +203,16 @@ public partial class WordHandler
             }
         }
 
+        // If removing an oMathPara (M.Paragraph) whose parent w:p has no other
+        // meaningful content, remove the wrapper w:p too to avoid zombie paragraphs.
+        var wrapperPara = (element is M.Paragraph && element.Parent is Paragraph wp
+            && wp.ChildElements.All(c => c == element || c is ParagraphProperties))
+            ? wp : null;
+
         element.Remove();
+
+        wrapperPara?.Remove();
+
         _doc.MainDocumentPart?.WordprocessingCommentsPart?.Comments?.Save();
         _doc.MainDocumentPart?.Document?.Save();
         return null;
