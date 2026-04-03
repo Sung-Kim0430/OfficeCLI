@@ -1079,10 +1079,12 @@ public partial class WordHandler
         return $@"
         * {{ margin: 0; padding: 0; box-sizing: border-box; }}
         body {{ background: #f0f0f0; font-family: {font}; color: {dd.Color}; padding: 20px; }}
-        .page {{ background: white; margin: 0 auto 40px; padding: {mT} {mR} {mB} {mL};
+        .page-wrapper {{ margin: 0 auto 40px; }}
+        .page {{ background: white; margin: 0 auto; padding: {mT} {mR} {mB} {mL};
             box-shadow: 0 2px 8px rgba(0,0,0,0.15); border-radius: 4px;
             min-height: {pageH}; line-height: {lh}; font-size: {sz}; position: relative; overflow-x: auto;
             display: flex; flex-direction: column; font-kerning: none; letter-spacing: 0;
+            transform-origin: center top;
             }}
         .page-body {{ flex: 1; display: flex; flex-direction: column; text-autospace: ideograph-alpha ideograph-numeric; }}
         .page-body > :first-child {{ margin-top: 0 !important; }}
@@ -1115,7 +1117,7 @@ public partial class WordHandler
         th, td {{ border: none; padding: 3pt 5.4pt; text-align: inherit; vertical-align: top; }}
         th {{ font-weight: 600; }}
         @media print {{ body {{ background: white; padding: 0; }}
-            .page {{ box-shadow: none; margin: 0; max-width: none; }}
+            .page {{ box-shadow: none; margin: 0; max-width: none; transform: none !important; }}
             hr.page-break {{ page-break-after: always; border: none; margin: 0; }} }}";
     }
 

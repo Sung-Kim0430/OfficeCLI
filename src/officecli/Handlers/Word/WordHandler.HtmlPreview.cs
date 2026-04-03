@@ -90,11 +90,11 @@ public partial class WordHandler
             }
             var families = string.Join("&", docFonts.Select(f =>
                 $"family={f.Replace(' ', '+')}:ital,wght@0,400;0,700;1,400;1,700"));
-            sb.AppendLine($"<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?{families}&display=swap\">");
+            sb.AppendLine($"<link rel=\"stylesheet\" href=\"https://fonts.googleapis.com/css2?{families}&display=swap\" onerror=\"this.remove()\">");
         }
-        // KaTeX for math rendering
-        sb.AppendLine("<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css\">");
-        sb.AppendLine("<script defer src=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js\"></script>");
+        // KaTeX for math rendering (graceful degradation: shows raw LaTeX when offline)
+        sb.AppendLine("<link rel=\"stylesheet\" href=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css\" onerror=\"this.remove()\">");
+        sb.AppendLine("<script defer src=\"https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js\" onerror=\"document.querySelectorAll('.katex-formula').forEach(function(el){el.textContent=el.dataset.formula;el.style.fontFamily='monospace';el.style.color='#666'})\"></script>");
         sb.AppendLine("</head>");
         sb.AppendLine("<body>");
 
@@ -184,6 +184,7 @@ public partial class WordHandler
 
         for (int i = 0; i < pageList.Count; i++)
         {
+            sb.AppendLine("<div class=\"page-wrapper\">");
             sb.AppendLine($"<div class=\"page\" data-page=\"{i + 1}\" style=\"{maxW}\">");
             if (i == 0) sb.Append(headerHtml);
             sb.Append("<div class=\"page-body\">");
@@ -197,6 +198,7 @@ public partial class WordHandler
             sb.Append("</div>");
             sb.Append(footerTemplate.Replace("<!--PAGE_NUM-->", (i + 1).ToString()));
             sb.AppendLine("</div>");
+            sb.AppendLine("</div>");
         }
 
         // Auto-pagination script: split overflowing pages and KaTeX rendering
@@ -208,6 +210,8 @@ public partial class WordHandler
         sb.AppendLine("      try{katex.render(el.dataset.formula,el,{throwOnError:false,displayMode:!!el.dataset.display});}catch(e){el.textContent=el.dataset.formula+' (Error: '+e.message+'. See https://katex.org/docs/supported.html for supported syntax.)';}");
         sb.AppendLine("      el.classList.add('katex-rendered');");
         sb.AppendLine("    });");
+        sb.AppendLine("  }else{");
+        sb.AppendLine("    document.querySelectorAll('.katex-formula:not(.katex-rendered)').forEach(function(el){el.textContent=el.dataset.formula;el.style.fontFamily='monospace';el.style.color='#666';});");
         sb.AppendLine("  }");
         // CJK punctuation compression (~25% per JIS X4051): negative margin on punctuation
         sb.AppendLine("  (function(){");
@@ -264,7 +268,9 @@ public partial class WordHandler
         if(bot>availH){splitIdx=ci;break;}
       }
       if(splitIdx<=0)continue;
-      // Create new page
+      // Create new page wrapped in page-wrapper
+      var nw=document.createElement('div');
+      nw.className='page-wrapper';
       var np=document.createElement('div');
       np.className='page';
       np.style.cssText=page.style.cssText;
@@ -283,7 +289,10 @@ public partial class WordHandler
       var nf=document.createElement('div');
       nf.innerHTML=ftpl.replace('<!--PAGE_NUM-->',(pi+2).toString());
       if(nf.firstChild)np.appendChild(nf.firstChild);
-      page.after(np);
+      nw.appendChild(np);
+      var parentWrapper=page.closest('.page-wrapper');
+      if(parentWrapper)parentWrapper.after(nw);
+      else page.after(nw);
     }
     // Renumber pages
     var allPages=document.querySelectorAll('.page');
@@ -316,7 +325,7 @@ public partial class WordHandler
       if(ch>maxBodyH-fh+2)again=true;
     });
     if(again)setTimeout(paginate,0);
-    else{setTimeout(positionFootnotes,0);setTimeout(applyPageFilter,0);}
+    else{setTimeout(positionFootnotes,0);setTimeout(applyPageFilter,0);setTimeout(scalePages,0);}
   }
   function positionFootnotes(){
     document.querySelectorAll('.page').forEach(function(page){
@@ -345,6 +354,28 @@ public partial class WordHandler
   }
   setTimeout(paginate,100);
 ");
+        // Responsive scaling: shrink pages to fit viewport (like PPT's scaleSlides)
+        sb.AppendLine(@"  function scalePages(){
+    document.querySelectorAll('.page-wrapper').forEach(function(wrapper){
+      var page=wrapper.querySelector('.page');
+      if(!page||page.style.display==='none')return;
+      var pageW=page.offsetWidth;
+      var availW=wrapper.clientWidth;
+      if(pageW>availW&&availW>0){
+        var s=availW/pageW;
+        page.style.transform='scale('+s+')';
+        wrapper.style.height=(page.offsetHeight*s)+'px';
+      }else{
+        page.style.transform='';
+        wrapper.style.height='';
+      }
+    });
+  }
+  var _resizeTimer;
+  window.addEventListener('resize',function(){
+    clearTimeout(_resizeTimer);
+    _resizeTimer=setTimeout(scalePages,100);
+  });");
         // Pass requested pages to JS for post-pagination filtering
         if (requestedPages != null && requestedPages.Count > 0)
             sb.AppendLine($"  window._requestedPages=[{string.Join(",", requestedPages)}];");
