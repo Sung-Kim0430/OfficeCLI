@@ -190,15 +190,15 @@ Run `officecli <format> set` for all settable elements. Run `officecli <format> 
 
 ### find — format or replace matched text
 
-Use `find=` with `set` to target specific text within a paragraph (or broader scope) for formatting or replacement. The matched text is automatically split into its own run(s). Use `r"..."` prefix for regex: `find=r"\d+"` matches digits, `find=hello` matches literal text. Format props are separate `--prop` flags — do NOT nest them (e.g. `--prop bold=true`, not `--prop format=bold:true`).
+Use `find=` with `set` to target specific text within a paragraph (or broader scope) for formatting or replacement. The matched text is automatically split into its own run(s). Add `regex=true` for regex matching. Format props are separate `--prop` flags — do NOT nest them (e.g. `--prop bold=true`, not `--prop format=bold:true`).
 
 ```bash
 # Format matched text (auto-splits runs)
 officecli set doc.docx '/body/p[1]' --prop find=weather --prop highlight=yellow
 officecli set doc.docx '/body/p[1]' --prop find=weather --prop bold=true --prop color=red
 
-# Regex matching (r"..." prefix)
-officecli set doc.docx '/body/p[1]' --prop 'find=r"\d+%"' --prop color=red
+# Regex matching
+officecli set doc.docx '/body/p[1]' --prop 'find=\d+%' --prop regex=true --prop color=red
 
 # Replace text
 officecli set doc.docx / --prop find=draft --prop replace=final
@@ -207,7 +207,7 @@ officecli set doc.docx / --prop find=draft --prop replace=final
 officecli set doc.docx '/body/p[1]' --prop find=TODO --prop replace=DONE --prop bold=true
 
 # Bulk: color all dates red across all paragraphs
-officecli set doc.docx / --prop 'find=r"\d{4}-\d{2}-\d{2}"' --prop color=red
+officecli set doc.docx / --prop 'find=\d{4}-\d{2}-\d{2}' --prop regex=true --prop color=red
 
 # Replace in header
 officecli set doc.docx '/header[1]' --prop find=Draft --prop replace=Final
@@ -220,7 +220,7 @@ officecli set doc.docx '/header[1]' --prop find=Draft --prop replace=Final
 officecli set slides.pptx '/slide[1]/shape[1]' --prop find=weather --prop bold=true --prop color=red
 
 # Regex
-officecli set slides.pptx '/slide[1]/shape[1]' --prop 'find=r"\d+%"' --prop color=red
+officecli set slides.pptx '/slide[1]/shape[1]' --prop 'find=\d+%' --prop regex=true --prop color=red
 
 # Replace across all slides
 officecli set slides.pptx / --prop find=draft --prop replace=final
@@ -244,12 +244,11 @@ Path controls search scope: `/` = all slides, `/slide[N]` = single slide, `/slid
 | `find` + `replace` | Replace matched text |
 | `find` + `replace` + format props | Replace text and apply format to new text |
 
-- `r"..."` prefix enables regex mode; alternatively, use `regex=true` prop (recommended for batch/JSON):
-  - CLI: `--prop 'find=\d+%' --prop regex=true --prop color=red`
-  - Batch: `{"props":{"find":"\\d+%","regex":"true","color":"FF0000"}}`
+- Add `regex=true` to enable regex matching: `--prop 'find=\d+%' --prop regex=true`
+  - Batch JSON: `{"props":{"find":"\\d+%","regex":"true","color":"FF0000"}}`
 - Path controls search scope: `/` = body only (excludes headers/footers), `/header[1]` = first header, `/footer[1]` = first footer, `/body/p[1]` = specific paragraph, etc.
 - If `find=` matches nothing, the command succeeds with no changes (no error)
-- Matching is **case-sensitive** by default. Use regex `(?i)` flag for case-insensitive: `find=r"(?i)error"`
+- Matching is **case-sensitive** by default. For case-insensitive, use regex: `--prop 'find=(?i)error' --prop regex=true`
 - `find:` / `find=` matches work across run boundaries — text split across multiple runs is still found
 
 **Excel limitations:** Excel only supports `find` + `replace` (text replacement). `find` + format props (formatting matched text without replacing) is not supported in Excel — use Word or PowerPoint for that. In Excel, `find` without `replace` is treated as an unsupported property.
@@ -280,7 +279,7 @@ officecli add <file> <parent> --from <path>                               # clon
 
 **Text-anchored insert** (`--after find:X` / `--before find:X`):
 
-The `--after` and `--before` flags accept a `find:` prefix to locate an insertion point by text match within a paragraph. Use `r"..."` for regex: `--after 'find:r"\d+"'`.
+The `--after` and `--before` flags accept a `find:` prefix to locate an insertion point by text match within a paragraph.
 
 ```bash
 # Insert run after matched text (inline, within the same paragraph)
@@ -292,13 +291,10 @@ officecli add doc.docx '/body/p[1]' --type table --after "find:First sentence." 
 # Insert before matched text
 officecli add doc.docx '/body/p[1]' --type run --before find:weather --prop text="["
 
-# Regex anchor
-officecli add doc.docx '/body/p[1]' --type run --after 'find:r"\d+"' --prop text=" (new high)"
 ```
 
 - Inline types (run, picture, hyperlink...) insert within the paragraph
 - Block types (table, paragraph) auto-split the paragraph and insert between the two halves
-- Supports `r"..."` regex
 
 **PPT text-anchored insert** (inline only):
 
