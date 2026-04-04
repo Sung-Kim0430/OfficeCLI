@@ -294,4 +294,47 @@ static partial class CommandBuilder
 
         return moveCommand;
     }
+
+    private static Command BuildSwapCommand(Option<bool> jsonOption)
+    {
+        var swapFileArg = new Argument<FileInfo>("file") { Description = "Office document path" };
+        var swapPath1Arg = new Argument<string>("path1") { Description = "DOM path of the first element" };
+        var swapPath2Arg = new Argument<string>("path2") { Description = "DOM path of the second element" };
+
+        var swapCommand = new Command("swap", "Swap two elements in the document");
+        swapCommand.Add(swapFileArg);
+        swapCommand.Add(swapPath1Arg);
+        swapCommand.Add(swapPath2Arg);
+        swapCommand.Add(jsonOption);
+
+        swapCommand.SetAction(result => { var json = result.GetValue(jsonOption); return SafeRun(() =>
+        {
+            var file = result.GetValue(swapFileArg)!;
+            var path1 = result.GetValue(swapPath1Arg)!;
+            var path2 = result.GetValue(swapPath2Arg)!;
+
+            if (TryResident(file.FullName, req =>
+            {
+                req.Command = "swap";
+                req.Args["path"] = path1;
+                req.Args["to"] = path2;
+            }, json) is {} rc) return rc;
+
+            using var handler = DocumentHandlerFactory.Open(file.FullName, editable: true);
+            var (p1, p2) = handler switch
+            {
+                OfficeCli.Handlers.PowerPointHandler ppt => ppt.Swap(path1, path2),
+                OfficeCli.Handlers.WordHandler word => word.Swap(path1, path2),
+                OfficeCli.Handlers.ExcelHandler excel => excel.Swap(path1, path2),
+                _ => throw new InvalidOperationException("swap not supported for this document type")
+            };
+            var message = $"Swapped {p1} <-> {p2}";
+            if (json) Console.WriteLine(OutputFormatter.WrapEnvelopeText(message));
+            else Console.WriteLine(message);
+            NotifyWatch(handler, file.FullName, path1);
+            return 0;
+        }, json); });
+
+        return swapCommand;
+    }
 }
