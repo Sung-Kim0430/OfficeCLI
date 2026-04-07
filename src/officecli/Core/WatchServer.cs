@@ -1080,30 +1080,69 @@ public class WatchServer : IDisposable
         return (requestLine, headers, bodyPrefix);
     }
 
+    // Maximum size of a POST /api/selection request body. 64 KB is plenty for tens
+    // of thousands of selected paths and bounds memory + read time per request.
+    private const int MaxSelectionBodyBytes = 64 * 1024;
+    // Hard limit on how long we'll wait for the rest of a POST body to arrive.
+    // Prevents slow-loris style stalls (Content-Length advertised, body never sent).
+    private static readonly TimeSpan PostBodyReadTimeout = TimeSpan.FromSeconds(3);
+
     private async Task HandlePostSelectionAsync(NetworkStream stream, Dictionary<string, string> headers, string bodyPrefix, CancellationToken token)
     {
-        // Read remaining body bytes per Content-Length, if any
-        var body = bodyPrefix;
-        if (headers.TryGetValue("Content-Length", out var clStr) && int.TryParse(clStr, out var contentLength))
-        {
-            var have = Encoding.UTF8.GetByteCount(body);
-            if (have < contentLength)
-            {
-                var buf = new byte[Math.Min(8192, contentLength - have)];
-                while (have < contentLength)
-                {
-                    var n = await stream.ReadAsync(buf.AsMemory(0, Math.Min(buf.Length, contentLength - have)), token);
-                    if (n == 0) break;
-                    body += Encoding.UTF8.GetString(buf, 0, n);
-                    have += n;
-                }
-            }
-        }
-
         int statusCode = 204;
         string statusText = "No Content";
+        string body = bodyPrefix;
+
         try
         {
+            // Reject runaway Content-Length up front (covers FUZZER-001 slow-loris).
+            int contentLength = -1;
+            if (headers.TryGetValue("Content-Length", out var clStr) && int.TryParse(clStr, out var parsedCl))
+            {
+                if (parsedCl < 0 || parsedCl > MaxSelectionBodyBytes)
+                    throw new InvalidDataException("body too large");
+                contentLength = parsedCl;
+            }
+
+            // If the bodyPrefix already exceeds Content-Length, trim it. Without this,
+            // an attacker could smuggle extra bytes by sending a long body in the same
+            // TCP segment as the headers (FUZZER-002).
+            var prefixBytes = Encoding.UTF8.GetByteCount(body);
+            if (contentLength >= 0 && prefixBytes > contentLength)
+            {
+                var prefBytes = Encoding.UTF8.GetBytes(body);
+                body = Encoding.UTF8.GetString(prefBytes, 0, contentLength);
+                prefixBytes = contentLength;
+            }
+
+            // Read any missing tail bytes, bounded by both size and time.
+            if (contentLength > prefixBytes)
+            {
+                using var readCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                readCts.CancelAfter(PostBodyReadTimeout);
+                var sb = new StringBuilder(body, contentLength);
+                int have = prefixBytes;
+                var buf = new byte[8192];
+                try
+                {
+                    while (have < contentLength)
+                    {
+                        var toRead = Math.Min(buf.Length, contentLength - have);
+                        var n = await stream.ReadAsync(buf.AsMemory(0, toRead), readCts.Token);
+                        if (n == 0) break;
+                        sb.Append(Encoding.UTF8.GetString(buf, 0, n));
+                        have += n;
+                        if (have > MaxSelectionBodyBytes)
+                            throw new InvalidDataException("body too large");
+                    }
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                {
+                    throw new InvalidDataException("body read timed out");
+                }
+                body = sb.ToString();
+            }
+
             // Expected JSON: {"paths": ["/slide[1]/shape[2]", ...]}
             var req = JsonSerializer.Deserialize(body, WatchSelectionJsonContext.Default.SelectionRequest);
             var newSelection = req?.Paths ?? new List<string>();
