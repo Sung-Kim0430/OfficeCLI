@@ -21,6 +21,8 @@ irm https://raw.githubusercontent.com/iOfficeAI/OfficeCLI/main/install.ps1 | iex
 
 After installation, run `source ~/.zshrc` (macOS) or `source ~/.bashrc` (Linux) to make the `officecli` command available.
 
+Running bare `officecli` (no arguments) also triggers auto-install.
+
 Verify: `officecli --version`
 
 officecli auto-updates daily in the background.
@@ -137,7 +139,9 @@ Elements with stable IDs return `@attr=value` paths instead of positional indice
 ```
 Word footnote/endnote/sdt follow the same `@xxxId=` pattern; child elements inherit the parent's `@id=`. Run `officecli <format> get` for the full list.
 
-**All formats accepted as input** — use returned paths directly for subsequent `set`/`remove`. PPT also accepts `@name=` (e.g. `shape[@name=Title 1]`); positional indices like `shape[2]` still work as fallback.
+**All formats accepted as input** — use returned paths directly for subsequent `set`/`remove`. PPT also accepts `@name=` (e.g. `shape[@name=Title 1]`), with morph `!!` prefix awareness (`shape[@name=MyBox]` matches both `MyBox` and `!!MyBox`). Positional indices like `shape[2]` still work as fallback.
+
+**Deterministic IDs** — shape/paragraph IDs use global increment counters (not random), so identical batch scripts on identical documents produce identical IDs. This enables reproducible builds and diffable output.
 ```bash
 officecli set slides.pptx '/slide[1]/shape[@id=550950021]' --prop bold=true
 ```
@@ -359,8 +363,30 @@ officecli add <file> <parent> --from <path>                               # clon
 | Format | Types |
 |--------|-------|
 | **pptx** | slide, shape (textbox), picture (image/img), chart, table, row (tr), connector (connection/line), group, video (audio/media), equation (formula/math), notes, paragraph (para), run, zoom (slidezoom) |
-| **docx** | paragraph (para), run, table, row (tr), cell (td), image (picture/img), header, footer, section, bookmark, comment, footnote, endnote, formfield, sdt (contentcontrol), chart, equation (formula/math), field, hyperlink, style, toc, watermark, break (pagebreak/columnbreak) |
-| **xlsx** | sheet, row, cell, chart, image (picture), comment, table (listobject), namedrange (definedname), pivottable (pivot), sparkline, validation (datavalidation), autofilter, shape, textbox, databar/colorscale/iconset/formulacf (conditional formatting), csv (tsv) |
+| **docx** | paragraph (para), run, table, row (tr), cell (td), image (picture/img), header, footer, section, bookmark, comment, footnote, endnote, formfield (text/checkbox/dropdown), sdt (contentcontrol), chart, equation (formula/math), field, hyperlink, style, toc, watermark, break (pagebreak/columnbreak). Document protection: `set / --prop protection=forms\|readOnly\|comments\|trackedChanges\|none` |
+| **xlsx** | sheet, row, cell, chart, image (picture), comment, table (listobject), namedrange (definedname), pivottable (pivot), sparkline, validation (datavalidation), autofilter, shape, textbox, databar/colorscale/iconset/formulacf (conditional formatting), csv (tsv). Formulas auto-evaluated on write (150+ functions including VLOOKUP, SUMIF, IF, DATE, PMT, etc.) |
+
+### Pivot tables (xlsx)
+
+```bash
+officecli add data.xlsx /Sheet1 --type pivottable \
+  --prop source="Sheet1!A1:E100" --prop rows=Region,Category \
+  --prop cols=Year --prop values="Sales:sum,Qty:count" \
+  --prop grandTotals=rows --prop subtotals=off --prop sort=asc
+```
+
+Key props: `rows`, `cols`, `values` (Field:func[:showDataAs]), `filters`, `source`, `position`, `aggregate`, `showDataAs` (percent_of_total/row/col, running_total), `grandTotals` (both/rows/cols/none), `subtotals` (on/off), `sort` (asc/desc/locale/locale-desc). Aggregators: sum, count, average, max, min, product, stdDev, stdDevp, var, varp, countNums. Date columns auto-group. Multiple data fields and N×N row/col hierarchies supported. Run `officecli xlsx set pivottable` for full property list.
+
+### Document-level properties (all formats)
+
+```bash
+officecli set doc.docx / --prop docDefaults.font=Arial --prop docDefaults.fontSize=11pt
+officecli set doc.docx / --prop protection=forms --prop evenAndOddHeaders=true
+officecli set data.xlsx / --prop calc.mode=manual --prop calc.refMode=r1c1
+officecli set slides.pptx / --prop defaultFont=Arial --prop show.loop=true --prop print.what=handouts
+```
+
+Run `officecli <format> set /` for all available document-level properties (docDefaults, docGrid, CJK spacing, calc, print, show, theme, extended).
 
 **Text-anchored insert** (`--after find:X` / `--before find:X`):
 
