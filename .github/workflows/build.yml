@@ -34,11 +34,15 @@ jobs:
             os: ubuntu-latest
           - rid: win-x64
             name: officecli-win-x64.exe
-            os: ubuntu-latest
+            os: windows-latest
           - rid: win-arm64
             name: officecli-win-arm64.exe
-            os: ubuntu-latest
+            os: windows-latest
     runs-on: ${{ matrix.os }}
+
+    defaults:
+      run:
+        shell: bash
 
     steps:
       - uses: actions/checkout@v4
@@ -81,12 +85,14 @@ jobs:
         if: >-
           (matrix.rid == 'osx-arm64' && runner.arch == 'ARM64') ||
           (matrix.rid == 'osx-x64' && runner.arch == 'X64') ||
-          (matrix.rid == 'linux-x64' && runner.os == 'Linux')
+          (matrix.rid == 'linux-x64' && runner.os == 'Linux') ||
+          (matrix.rid == 'win-x64' && runner.os == 'Windows')
         run: |
           chmod +x publish/${{ matrix.name }}
           publish/${{ matrix.name }} create test_smoke.docx
           publish/${{ matrix.name }} add test_smoke.docx /body --type paragraph --prop text="Hello from CI"
           publish/${{ matrix.name }} get test_smoke.docx /body/p[1]
+          publish/${{ matrix.name }} close test_smoke.docx
           rm -f test_smoke.docx
 
       - name: Upload artifact
