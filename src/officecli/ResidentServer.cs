@@ -33,27 +33,54 @@ public class ResidentServer : IDisposable
     private CancellationTokenSource _mainCts = new();
     private CancellationTokenSource _pingCts = new();
     private readonly SemaphoreSlim _commandLock = new(1, 1);
-    private readonly TimeSpan _idleTimeout = ResolveIdleTimeout();
+    // Idle timeout is mutable: `create` starts the resident with a short
+    // 60s timeout, and a later `open` upgrades it to 12min via the
+    // `__set-idle-timeout__` ping command. Stored as ticks so we can
+    // do atomic Volatile reads/writes (TimeSpan is a multi-field struct
+    // and can't be volatile'd directly).
+    private long _idleTimeoutTicks = ResolveIdleTimeout().Ticks;
+    private TimeSpan CurrentIdleTimeout => TimeSpan.FromTicks(Volatile.Read(ref _idleTimeoutTicks));
     private CancellationTokenSource _idleCts = new();
     private bool _disposed;
 
-    // Idle timeout is configurable via OFFICECLI_RESIDENT_IDLE_SECONDS so
-    // tests can exercise the auto-shutdown path in seconds instead of
-    // minutes, and so future "open file → auto-start resident" UX can
-    // tune how aggressively the background process exits.
-    // Valid range: 1s .. 24h. Anything outside falls back to the 12min
-    // default. A value of "0" is rejected (would be an infinite-busy
-    // spin on the watchdog task).
+    // Valid idle-timeout range: 1s .. 24h. Anything outside falls back to
+    // the 12min default. A value of "0" is rejected (would be an infinite-
+    // busy spin on the watchdog task). Shared between the startup env-var
+    // path (OFFICECLI_RESIDENT_IDLE_SECONDS) and the runtime
+    // __set-idle-timeout__ RPC so both observe identical bounds.
+    private const int MinIdleSeconds = 1;
+    private const int MaxIdleSeconds = 86400;
+    private static readonly TimeSpan DefaultIdleTimeout = TimeSpan.FromMinutes(12);
+
+    // Initial idle timeout: env var (OFFICECLI_RESIDENT_IDLE_SECONDS) takes
+    // precedence, tests/CI use this to exercise short timeouts in seconds.
+    // Future "open file → auto-start resident" UX can tune how aggressively
+    // the background process exits by starting the child with this env var.
     private static TimeSpan ResolveIdleTimeout()
     {
         var raw = Environment.GetEnvironmentVariable("OFFICECLI_RESIDENT_IDLE_SECONDS");
         if (!string.IsNullOrWhiteSpace(raw)
             && int.TryParse(raw, out var secs)
-            && secs >= 1 && secs <= 86400)
+            && secs >= MinIdleSeconds && secs <= MaxIdleSeconds)
         {
             return TimeSpan.FromSeconds(secs);
         }
-        return TimeSpan.FromMinutes(12);
+        return DefaultIdleTimeout;
+    }
+
+    // Runtime upgrade path for the idle timeout. Called from the ping
+    // handler when a new `__set-idle-timeout__` request arrives. Returns
+    // false if the seconds value is out of range. On success, the
+    // watchdog loop is immediately kicked via ResetIdleTimer() so the
+    // new value takes effect on the next iteration — otherwise the
+    // in-flight Task.Delay would keep honouring the old duration.
+    private bool TrySetIdleTimeout(int seconds)
+    {
+        if (seconds < MinIdleSeconds || seconds > MaxIdleSeconds)
+            return false;
+        Volatile.Write(ref _idleTimeoutTicks, TimeSpan.FromSeconds(seconds).Ticks);
+        ResetIdleTimer();
+        return true;
     }
     // Shared shutdown Task so __close__ and Dispose coordinate on a single
     // ordered teardown: drain in-flight command → dispose handler → ack client.
@@ -216,17 +243,22 @@ public class ResidentServer : IDisposable
         {
             try
             {
-                // Snapshot the current idle CTS; ResetIdleTimer() swaps it to restart the wait
+                // Snapshot the current idle CTS and timeout on each loop
+                // iteration: ResetIdleTimer() swaps _idleCts to restart
+                // the wait, and TrySetIdleTimeout() mutates
+                // _idleTimeoutTicks and calls ResetIdleTimer() so the new
+                // duration is observed here on the very next pass.
                 var idleCts = Volatile.Read(ref _idleCts);
+                var currentTimeout = CurrentIdleTimeout;
                 using var linked = CancellationTokenSource.CreateLinkedTokenSource(idleCts.Token, token);
-                await Task.Delay(_idleTimeout, linked.Token);
+                await Task.Delay(currentTimeout, linked.Token);
 
                 // Reached here = idle timeout elapsed without reset.
                 // Kick off the ordered shutdown path instead of raw-
                 // cancelling _mainCts / _pingCts, so the "ping liveness ⇔
                 // file locked" invariant is preserved end-to-end: the
                 // ping pipe stays alive until handler.Dispose() completes.
-                Console.Error.WriteLine($"Resident idle for {_idleTimeout.TotalMinutes} minutes, closing.");
+                Console.Error.WriteLine($"Resident idle for {currentTimeout.TotalMinutes} minutes, closing.");
                 _ = ShutdownAsync();
                 break;
             }
@@ -314,6 +346,32 @@ public class ResidentServer : IDisposable
             {
                 var response = MakeResponse(0, _filePath, "");
                 await WriteLineToPipeAsync(accepted, response, token);
+                return;
+            }
+
+            if (request.Command == "__set-idle-timeout__")
+            {
+                // Runtime upgrade path: `open` sends this when it finds
+                // a resident that `create` auto-started with a short
+                // (60s) timeout, so long editing sessions honour the
+                // 12min `open` contract. Served on the ping pipe (not
+                // the main pipe) so it bypasses _commandLock and stays
+                // responsive even while the main pipe is busy. Safe
+                // because it only mutates _idleTimeoutTicks (Volatile)
+                // and nudges _idleCts — both of which are already
+                // concurrency-safe for the watchdog loop.
+                var secs = request.GetIntArg("seconds") ?? 0;
+                if (TrySetIdleTimeout(secs))
+                {
+                    var ok = MakeResponse(0, $"{secs}", "");
+                    await WriteLineToPipeAsync(accepted, ok, token);
+                }
+                else
+                {
+                    var err = MakeResponse(1, "",
+                        $"Invalid idle timeout: {secs}s (must be {MinIdleSeconds}..{MaxIdleSeconds})");
+                    await WriteLineToPipeAsync(accepted, err, token);
+                }
                 return;
             }
 
