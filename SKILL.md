@@ -56,12 +56,15 @@ Replace `pptx` with `docx` or `xlsx`. Commands: `view`, `get`, `query`, `set`, `
 
 ## Performance: Resident Mode
 
-For multi-step workflows (3+ commands on the same file), use `open`/`close`:
+For multi-step workflows (3+ commands on the same file), use `create`/`open` + `close`:
 ```bash
-officecli open report.docx       # keep in memory — fast subsequent commands
+officecli create report.docx     # create blank file and keep in memory
+officecli open report.docx       # or open existing file and keep in memory
 officecli set report.docx ...    # no file I/O overhead
 officecli close report.docx      # save and release
 ```
+
+Skipping `close` still works (the resident exits on its own after 60s idle for `create`, 12min for `open`), but explicit `close` releases the file immediately and guarantees the save is flushed before the next command sees the file on disk.
 
 ---
 
@@ -132,27 +135,16 @@ Run `officecli docx get` / `officecli xlsx get` / `officecli pptx get` for all a
 
 ### Stable ID Addressing
 
-Elements with stable IDs return `@attr=value` paths instead of positional indices. These paths survive insert/delete operations — use them for multi-step workflows.
+Elements with stable IDs return `@attr=value` paths instead of positional indices. Prefer these in multi-step workflows — positional indices shift on insert/delete, stable IDs do not.
 
-**Returned path format (output):**
 ```
-/slide[1]/shape[@id=550950021]                    # PPT shape (cNvPr.Id)
+/slide[1]/shape[@id=550950021]                    # PPT shape
 /slide[1]/table[@id=1388430425]/tr[1]/tc[2]       # PPT table
 /body/p[@paraId=1A2B3C4D]                         # Word paragraph
 /comments/comment[@commentId=1]                    # Word comment
 ```
-Word footnote/endnote/sdt follow the same `@xxxId=` pattern; child elements inherit the parent's `@id=`. Run `officecli <format> get` for the full list.
 
-**All formats accepted as input** — use returned paths directly for subsequent `set`/`remove`. PPT also accepts `@name=` (e.g. `shape[@name=Title 1]`), with morph `!!` prefix awareness (`shape[@name=MyBox]` matches both `MyBox` and `!!MyBox`). Positional indices like `shape[2]` still work as fallback.
-
-**Deterministic IDs** — shape/paragraph IDs use global increment counters (not random), so identical batch scripts on identical documents produce identical IDs. This enables reproducible builds and diffable output.
-```bash
-officecli set slides.pptx '/slide[1]/shape[@id=550950021]' --prop bold=true
-```
-
-Elements without stable IDs (slide, paragraph, run, tr/tc, row) use positional indices as fallback.
-
-**When to use stable IDs:** Prefer `@id=` / `@paraId=` paths in multi-step workflows where you add or remove elements between commands — positional indices shift, but stable IDs do not.
+Use returned paths directly for subsequent `set`/`remove`. PPT also accepts `@name=` (e.g. `shape[@name=Title 1]`), with morph `!!` prefix awareness. Elements without stable IDs (slide, run, tr/tc, row) fall back to positional indices. Run `officecli <format> get` for the full list.
 
 ### query
 
@@ -244,30 +236,22 @@ officecli get-marks <file> [--json]
 
 **Path** must be `data-path` format from watch HTML: Word `/body/p[N]` or `/body/table[N]`; PPT `/slide[N]/shape[@id=ID]` (preferred) or `/slide[N]/shape[N]`. Excel is not supported in v1 (marks always resolve `stale=true`). Native query paths like `/body/p[@paraId=...]` will NOT resolve.
 
-**Worked example — propose → review → apply → stale:**
+**Worked example:**
 
 ```bash
 officecli watch report.docx &
-# 1. Propose
+# Propose
 officecli mark report.docx /body/p[3] --prop find="资钱" --prop tofix="资金" --prop color=red --prop note="术语错误"
-officecli mark report.docx /body/p[7] --prop find="teh"  --prop tofix="the"  --prop color=yellow
-
-# 2. Review — human eyeballs the browser highlights, optionally unmarks bad proposals
-# 3. Apply — pipeline reads accepted marks and runs real set commands
-#    (`.marks // []` defends against the watch dying mid-pipeline; see note below)
+# Review — human eyeballs highlights in browser, unmarks bad proposals
+# Apply — read accepted marks, run real set commands
 officecli get-marks report.docx --json \
   | jq -r '(.marks // []) | .[] | select(.tofix != null) | [.path, .find, .tofix] | @tsv' \
   | while IFS=$'\t' read -r path find tofix; do
       officecli set report.docx "$path" --prop "find=$find" --prop "replace=$tofix"
     done
-
-# 4. Verify — applied marks now report stale=true
-officecli get-marks report.docx --json | jq '(.marks // []) | .[] | {find, stale}'
 ```
 
-> **Perf:** apply loops like the one above are exactly the case the **Performance: Resident Mode** section above warns about — for >3 mutations, wrap them in `batch` or `open`/`close`. A 20-shape `set` loop drops from ~67 s to under 1 s.
-
-All mark commands support `--json`. Server rejections produce a non-zero exit + error envelope. Even on error, `get-marks --json` always emits a `{version, marks, error?}` shape so the canonical apply pipeline above never crashes on `null`. Check the `error` field if you need to fail fast.
+All mark commands support `--json`. For >3 mutations, wrap the apply loop in `batch` or `open`/`close` for performance.
 
 ---
 
@@ -295,11 +279,11 @@ Run `officecli <format> set` for all settable elements. Run `officecli <format> 
 
 ### find — format or replace matched text
 
-Use `find=` with `set` to target specific text within a paragraph (or broader scope) for formatting or replacement. The matched text is automatically split into its own run(s). Add `regex=true` for regex matching. Format props are separate `--prop` flags — do NOT nest them (e.g. `--prop bold=true`, not `--prop format=bold:true`).
+Use `find=` with `set` to target specific text for formatting or replacement. Works the same in Word and PPT — just swap paths. Format props are separate `--prop` flags — do NOT nest them.
 
 ```bash
-# Format matched text (auto-splits runs) — combine any format props
-officecli set doc.docx '/body/p[1]' --prop find=weather --prop bold=true --prop color=red --prop highlight=yellow
+# Format matched text (auto-splits runs)
+officecli set doc.docx '/body/p[1]' --prop find=weather --prop bold=true --prop color=red
 
 # Regex matching
 officecli set doc.docx '/body/p[1]' --prop 'find=\d+%' --prop regex=true --prop color=red
@@ -310,41 +294,18 @@ officecli set doc.docx / --prop find=draft --prop replace=final
 # Replace + format
 officecli set doc.docx '/body/p[1]' --prop find=TODO --prop replace=DONE --prop bold=true
 
-# Replace in header
-officecli set doc.docx '/header[1]' --prop find=Draft --prop replace=Final
-```
-
-**PPT find works the same way** — same props, same behavior; just swap paths to `/slide[N]/shape[M]` (or `/slide[N]/table[M]`):
-
-```bash
-# Cross-slide replace
+# PPT — same syntax, different paths
 officecli set slides.pptx / --prop find=draft --prop replace=final
-
-# Single-shape replace + format
-officecli set slides.pptx '/slide[1]/shape[1]' --prop find=TODO --prop replace=DONE --prop bold=true
 ```
 
-Path controls search scope: `/` = all slides, `/slide[N]` = single slide, `/slide[N]/shape[M]` = single shape, `/slide[N]/table[M]` = table, `/slide[N]/notes` = notes pane.
+**Path controls search scope:** `/` = whole document, `/body/p[1]` or `/slide[N]/shape[M]` = specific element, `/header[1]` = header, `/footer[1]` = footer.
 
-> **Known limitation:** Notes pane find+format writes correctly, but `get` returns plain text only — run-level formatting cannot be verified via CLI.
-
-**Behavior matrix:**
-
-| Props | Effect |
-|-------|--------|
-| `find` + format props | Split runs, apply format to matched text |
-| `find` + `replace` | Replace matched text |
-| `find` + `replace` + format props | Replace text and apply format to new text |
-
-- Add `regex=true` to enable regex matching: `--prop 'find=\d+%' --prop regex=true`
-  - Batch JSON: `{"props":{"find":"\\d+%","regex":"true","color":"FF0000"}}`
-- Path controls search scope: `/` = body only (excludes headers/footers), `/header[1]` = first header, `/footer[1]` = first footer, `/body/p[1]` = specific paragraph, etc.
-- If `find=` matches nothing, the command succeeds with no changes (no error)
-- `--json` output includes a `"matched": N` field indicating the number of matches found
-- Matching is **case-sensitive** by default. For case-insensitive, use regex: `--prop 'find=(?i)error' --prop regex=true`
-- `find:` / `find=` matches work across run boundaries — text split across multiple runs is still found
-
-**Excel limitations:** Excel only supports `find` + `replace` (text replacement). `find` + format props (formatting matched text without replacing) is not supported in Excel — use Word or PowerPoint for that. In Excel, `find` without `replace` is treated as an unsupported property.
+**Notes:**
+- Case-sensitive by default. Case-insensitive: `--prop 'find=(?i)error' --prop regex=true`
+- Matches work across run boundaries
+- No match = no error (silent success). `--json` includes `"matched": N`
+- Batch JSON regex: `{"props":{"find":"\\d+%","regex":"true","color":"FF0000"}}`
+- **Excel:** only `find` + `replace` supported (no find + format props)
 
 ### add — add elements or clone
 
@@ -352,15 +313,11 @@ Path controls search scope: `/` = all slides, `/slide[N]` = single slide, `/slid
 officecli add <file> <parent> --type <type> [--prop ...]
 officecli add <file> <parent> --type <type> --after <path> [--prop ...]   # insert after anchor
 officecli add <file> <parent> --type <type> --before <path> [--prop ...]  # insert before anchor
-officecli add <file> <parent> --type <type> --index N [--prop ...]        # insert at position (legacy)
+officecli add <file> <parent> --type <type> --index N [--prop ...]        # insert at position (0-based, legacy)
 officecli add <file> <parent> --from <path>                               # clone existing element
 ```
 
-**Insert position** (`--after`, `--before`, `--index` are mutually exclusive):
-- `--after "p[@paraId=1A2B3C4D]"` — insert after the anchor element (short or full path)
-- `--before "/body/p[@paraId=5E6F7A8B]"` — insert before the anchor element
-- `--index N` — insert at 0-based position (legacy, prefer --after/--before)
-- No position flag — append to end (default)
+`--after`, `--before`, `--index` are mutually exclusive. No position flag = append to end.
 
 **Element types (with aliases):**
 
@@ -442,18 +399,12 @@ echo '[
   {"command":"set","path":"/Sheet1/B1","props":{"value":"Score","bold":"true"}}
 ]' | officecli batch data.xlsx --json
 
-# Via --commands (inline, no stdin needed)
+# Via --commands (inline) or --input (file)
 officecli batch data.xlsx --commands '[{"op":"set","path":"/Sheet1/A1","props":{"value":"Done"}}]' --json
-
-# Via --input (file)
 officecli batch data.xlsx --input updates.json --force --json
 ```
 
-Batch supports: `add`, `set`, `get`, `query`, `remove`, `move`, `swap`, `view`, `raw`, `raw-set`, `validate`.
-
-Batch fields: `command` (or `op`), `path`, `parent`, `type`, `from`, `to`, `index`, `after`, `before`, `props` (dict), `selector`, `mode`, `depth`, `part`, `xpath`, `action`, `xml`.
-
-JSON output is wrapped in an envelope: `{"results": [...], "summary": {"total", "executed", "succeeded", "failed", "skipped"}}`. On error, each failed result includes the original batch item for debugging. Large outputs automatically spill to a temp file.
+Batch supports: `add`, `set`, `get`, `query`, `remove`, `move`, `swap`, `view`, `raw`, `raw-set`, `validate`. Fields: `command` (or `op`), `path`, `parent`, `type`, `from`, `to`, `index`, `after`, `before`, `props`, `selector`, `mode`, `depth`, `part`, `xpath`, `action`, `xml`.
 
 ---
 
@@ -490,19 +441,17 @@ Run `officecli <format> raw` for available parts per format.
 
 ## Specialized Skills
 
-This skill covers the officecli CLI basics. For complex scenarios, load the dedicated skill for better results:
+For complex scenarios, load the dedicated skill from `skills/<skill-name>/SKILL.md`:
 
-| Scenario | Skill | When to Use |
-|----------|-------|-------------|
-| **Word documents** | `officecli-docx` | Create, read, edit .docx — reports, letters, memos, proposals |
-| **Academic papers** | `officecli-academic-paper` | Research papers, white papers with TOC, equations, footnotes, bibliography |
-| **Presentations** | `officecli-pptx` | Create, read, edit .pptx — general slide decks |
-| **Pitch decks** | `officecli-pitch-deck` | Investor decks, product launches, sales decks with charts and stat callouts |
-| **Morph PPT** | `morph-ppt` | Morph-animated cinematic presentations |
-| **Excel** | `officecli-xlsx` | Create, read, edit .xlsx — financial models, trackers, formulas |
-| **Data dashboards** | `officecli-data-dashboard` | CSV/tabular data → Excel dashboards with KPI cards, charts, sparklines |
-
-> **How to load:** Ask your AI tool to enable the skill by name, or load the skill file from `skills/<skill-name>/SKILL.md`.
+| Skill | Scope |
+|-------|-------|
+| `officecli-docx` | Word documents — reports, letters, memos |
+| `officecli-academic-paper` | Academic papers with TOC, equations, footnotes, bibliography |
+| `officecli-pptx` | Presentations — general slide decks |
+| `officecli-pitch-deck` | Investor/product/sales decks with charts and callouts |
+| `morph-ppt` | Morph-animated cinematic presentations |
+| `officecli-xlsx` | Excel — financial models, trackers, formulas |
+| `officecli-data-dashboard` | CSV/tabular data → Excel dashboards with charts, sparklines |
 
 ---
 
