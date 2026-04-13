@@ -702,8 +702,8 @@
                 e.stopPropagation();
                 return;
             }
-            // Didn't move enough — mousedown's preventDefault() suppressed the
-            // click event, so handle click logic (Ctrl/Shift/plain) inline here.
+            // Didn't move enough — handle click logic inline here because
+            // mousedown's preventDefault() suppresses click for Ctrl (not Meta/Shift).
             var path = cd.anchor.sheet + '/' + cd.anchor.col + cd.anchor.row;
             var cell = cd.anchor;
             if (e.shiftKey && _anchor && cell.sheet === _anchor.sheet) {
@@ -718,6 +718,9 @@
             }
             applySelectionToDom(); // immediate visual feedback
             postSelection(_selection);
+            // preventDefault on mousedown suppresses click for Ctrl but not Meta/Shift.
+            // Suppress the click event for those to avoid double-processing.
+            if (e.metaKey || e.shiftKey) _suppressNextClick = true;
             return;
         }
 
