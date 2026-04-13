@@ -401,4 +401,81 @@ internal static class OleHelper
                 Console.Error.WriteLine($"warning: unknown ole property '{key}' — ignored");
         }
     }
+
+    // ==================== Shared Add helpers ====================
+    //
+    // The following methods extract duplicated boilerplate that previously
+    // appeared verbatim in Word/Excel/PowerPoint AddOle handlers.
+
+    /// <summary>
+    /// Validate and extract the required <c>src</c> (or <c>path</c>) property
+    /// from the caller-supplied dictionary. Throws
+    /// <see cref="ArgumentException"/> when neither key is present or the
+    /// value is blank.
+    /// </summary>
+    public static string RequireSource(Dictionary<string, string>? properties)
+    {
+        properties ??= new Dictionary<string, string>();
+        if (!properties.TryGetValue("src", out var srcPath)
+            && !properties.TryGetValue("path", out srcPath))
+            throw new ArgumentException("'src' property is required for ole type");
+        if (string.IsNullOrWhiteSpace(srcPath))
+            throw new ArgumentException("'src' property for ole type cannot be empty");
+        return srcPath;
+    }
+
+    /// <summary>
+    /// Resolve the ProgID from explicit property → auto-detected from
+    /// extension, then validate. Replaces the 4-line fallback chain that
+    /// was duplicated in every handler.
+    /// </summary>
+    public static string ResolveProgId(Dictionary<string, string> properties, string srcPath)
+    {
+        var progId = properties.GetValueOrDefault("progId")
+            ?? properties.GetValueOrDefault("progid")
+            ?? DetectProgId(srcPath);
+        ValidateProgId(progId);
+        return progId;
+    }
+
+    /// <summary>
+    /// Create the icon preview <see cref="ImagePart"/> on the given host
+    /// part — either from the user-supplied <c>icon</c> property or the
+    /// default 1×1 placeholder PNG. Returns the relationship id.
+    /// </summary>
+    public static (ImagePart Part, string RelId) CreateIconPart(OpenXmlPart host, Dictionary<string, string> properties)
+    {
+        ImagePart iconPart;
+        if (properties.TryGetValue("icon", out var iconPath) && !string.IsNullOrWhiteSpace(iconPath))
+        {
+            var (iconStream, iconType) = ImageSource.Resolve(iconPath);
+            using var _ = iconStream;
+            iconPart = AddImagePartTo(host, iconType);
+            iconPart.FeedData(iconStream);
+        }
+        else
+        {
+            iconPart = AddImagePartTo(host, ImagePartType.Png);
+            using var ms = new MemoryStream(PlaceholderIconPng);
+            iconPart.FeedData(ms);
+        }
+        return (iconPart, host.GetIdOfPart(iconPart));
+    }
+
+    /// <summary>
+    /// Dispatch <see cref="OpenXmlPart.AddImagePart"/> to the correct
+    /// concrete host type. Covers all part types that can own OLE objects.
+    /// </summary>
+    private static ImagePart AddImagePartTo(OpenXmlPart host, PartTypeInfo type)
+        => host switch
+        {
+            MainDocumentPart mdp => mdp.AddImagePart(type),
+            HeaderPart hp => hp.AddImagePart(type),
+            FooterPart fp => fp.AddImagePart(type),
+            WorksheetPart wp => wp.AddImagePart(type),
+            SlidePart sp => sp.AddImagePart(type),
+            DrawingsPart dp => dp.AddImagePart(type),
+            _ => throw new InvalidOperationException(
+                $"Host part type {host.GetType().Name} does not support image parts"),
+        };
 }

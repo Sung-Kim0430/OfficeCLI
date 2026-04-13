@@ -21,7 +21,7 @@ public partial class PowerPointHandler
     {
         if (!properties.TryGetValue("path", out var modelPath) &&
             !properties.TryGetValue("src", out modelPath))
-            throw new ArgumentException("'path' or 'src' property is required for 3dmodel type");
+            throw new ArgumentException("'src' property is required for 3dmodel type");
 
         var slideMatch = Regex.Match(parentPath, @"^/slide\[(\d+)\]$");
         if (!slideMatch.Success)

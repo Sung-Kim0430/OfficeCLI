@@ -143,7 +143,7 @@ public partial class WordHandler
     private string AddPicture(OpenXmlElement parent, string parentPath, int? index, Dictionary<string, string> properties)
     {
         if (!properties.TryGetValue("path", out var imgPath) && !properties.TryGetValue("src", out imgPath))
-            throw new ArgumentException("'path' (or 'src') property is required for picture type");
+            throw new ArgumentException("'src' property is required for picture type");
 
         // Buffer the image bytes so we can both feed the image part and sniff
         // the native pixel dimensions for auto aspect-ratio calculations.
@@ -297,18 +297,8 @@ public partial class WordHandler
     // display (icon|content). display=content flips DrawAspect to "Content".
     private string AddOle(OpenXmlElement parent, string parentPath, int? index, Dictionary<string, string> properties)
     {
-        // Null guard: AddOle is reached from Add() dispatch which may pass
-        // null properties through. Normalize to empty dict so the required
-        // 'src' check below throws a clean ArgumentException rather than NRE.
         properties ??= new Dictionary<string, string>();
-        if (!properties.TryGetValue("src", out var srcPath)
-            && !properties.TryGetValue("path", out srcPath))
-            throw new ArgumentException("'src' (or 'path') property is required for ole type");
-        if (string.IsNullOrWhiteSpace(srcPath))
-            throw new ArgumentException("'src' property for ole type cannot be empty");
-
-        // Visibly warn on unknown ole props (no structured warning channel
-        // on Add — see OleHelper.WarnOnUnknownOleProps).
+        var srcPath = OfficeCli.Core.OleHelper.RequireSource(properties);
         OfficeCli.Core.OleHelper.WarnOnUnknownOleProps(properties);
 
         var mainPart = _doc.MainDocumentPart!;
@@ -342,42 +332,13 @@ public partial class WordHandler
         var (embedRelId, _) = OfficeCli.Core.OleHelper.AddEmbeddedPart(hostPart, srcPath, _filePath);
 
         // 2. Resolve ProgID (explicit > auto-detected from extension).
-        var progId = properties.GetValueOrDefault("progId")
-            ?? properties.GetValueOrDefault("progid")
-            ?? OfficeCli.Core.OleHelper.DetectProgId(srcPath);
-        OfficeCli.Core.OleHelper.ValidateProgId(progId);
+        var progId = OfficeCli.Core.OleHelper.ResolveProgId(properties, srcPath);
 
         // 3. Create the icon preview ImagePart on the host part (same part
         //    that owns the OLE element itself). Attaching to MainDocumentPart
         //    when the OLE lives in a header/footer would produce a dangling
         //    cross-part relationship — see host part resolution above.
-        ImagePart iconPart;
-        if (properties.TryGetValue("icon", out var iconPath) && !string.IsNullOrWhiteSpace(iconPath))
-        {
-            var (iconStream, iconType) = OfficeCli.Core.ImageSource.Resolve(iconPath);
-            using var _ = iconStream;
-            iconPart = hostPart switch
-            {
-                MainDocumentPart mdp => mdp.AddImagePart(iconType),
-                HeaderPart hp => hp.AddImagePart(iconType),
-                FooterPart fp => fp.AddImagePart(iconType),
-                _ => mainPart.AddImagePart(iconType),
-            };
-            iconPart.FeedData(iconStream);
-        }
-        else
-        {
-            iconPart = hostPart switch
-            {
-                MainDocumentPart mdp => mdp.AddImagePart(ImagePartType.Png),
-                HeaderPart hp => hp.AddImagePart(ImagePartType.Png),
-                FooterPart fp => fp.AddImagePart(ImagePartType.Png),
-                _ => mainPart.AddImagePart(ImagePartType.Png),
-            };
-            using var ms = new MemoryStream(OfficeCli.Core.OleHelper.PlaceholderIconPng);
-            iconPart.FeedData(ms);
-        }
-        var iconRelId = hostPart.GetIdOfPart(iconPart);
+        var (_, iconRelId) = OfficeCli.Core.OleHelper.CreateIconPart(hostPart, properties);
 
         // 4. Dimensions. Word VML shapes take points in their style string.
         //    Defaults match OleHelper's 2in × 0.75in icon frame.

@@ -900,14 +900,7 @@ public partial class ExcelHandler
                 var oleWorksheet = FindWorksheet(oleSheetName)
                     ?? throw new ArgumentException($"Sheet not found: {oleSheetName}");
 
-                if (!properties.TryGetValue("src", out var oleSrc)
-                    && !properties.TryGetValue("path", out oleSrc))
-                    throw new ArgumentException("'src' (or 'path') property is required for ole type");
-                if (string.IsNullOrWhiteSpace(oleSrc))
-                    throw new ArgumentException("'src' property for ole type cannot be empty");
-
-                // Visibly warn on unknown ole props (no structured warning
-                // channel on Add — see OleHelper.WarnOnUnknownOleProps).
+                var oleSrc = OfficeCli.Core.OleHelper.RequireSource(properties);
                 OfficeCli.Core.OleHelper.WarnOnUnknownOleProps(properties);
 
                 // CONSISTENCY(excel-ole-display): Excel OLE does not have a
@@ -933,27 +926,10 @@ public partial class ExcelHandler
                 var (oleEmbedRelId, _) = OfficeCli.Core.OleHelper.AddEmbeddedPart(oleWorksheet, oleSrc, _filePath);
 
                 // 2. Icon preview image part.
-                ImagePart oleIconPart;
-                if (properties.TryGetValue("icon", out var oleIconPath) && !string.IsNullOrWhiteSpace(oleIconPath))
-                {
-                    var (oleIconStream, oleIconType) = OfficeCli.Core.ImageSource.Resolve(oleIconPath);
-                    using var _ = oleIconStream;
-                    oleIconPart = oleWorksheet.AddImagePart(oleIconType);
-                    oleIconPart.FeedData(oleIconStream);
-                }
-                else
-                {
-                    oleIconPart = oleWorksheet.AddImagePart(ImagePartType.Png);
-                    using var oleMs = new MemoryStream(OfficeCli.Core.OleHelper.PlaceholderIconPng);
-                    oleIconPart.FeedData(oleMs);
-                }
-                var oleIconRelId = oleWorksheet.GetIdOfPart(oleIconPart);
+                var (_, oleIconRelId) = OfficeCli.Core.OleHelper.CreateIconPart(oleWorksheet, properties);
 
                 // 3. Resolve ProgID.
-                var oleProgId = properties.GetValueOrDefault("progId")
-                    ?? properties.GetValueOrDefault("progid")
-                    ?? OfficeCli.Core.OleHelper.DetectProgId(oleSrc);
-                OfficeCli.Core.OleHelper.ValidateProgId(oleProgId);
+                var oleProgId = OfficeCli.Core.OleHelper.ResolveProgId(properties, oleSrc);
 
                 // 4. Anchor: accept either cell range "B2:E6" or x/y/width/height (column units).
                 // CONSISTENCY(ole-width-units): sub-cell precision is carried in
@@ -1092,19 +1068,21 @@ public partial class ExcelHandler
 
             case "picture":
             case "image":
+            case "img":
             {
                 var picSegments = parentPath.TrimStart('/').Split('/', 2);
                 var picSheetName = picSegments[0];
                 var picWorksheet = FindWorksheet(picSheetName)
                     ?? throw new ArgumentException($"Sheet not found: {picSheetName}");
 
-                var imgPath = properties.GetValueOrDefault("path", "") ?? "";
-                if (string.IsNullOrEmpty(imgPath))
-                    imgPath = properties.GetValueOrDefault("src", "");
-                if (string.IsNullOrEmpty(imgPath))
-                    throw new ArgumentException("picture requires a 'path' or 'src' property");
+                if (!properties.TryGetValue("path", out var imgPath)
+                    && !properties.TryGetValue("src", out imgPath))
+                    throw new ArgumentException("'src' property is required for picture type");
 
-                var (px, py, pw, ph) = ParseAnchorBounds(properties, "0", "0", "5", "5");
+                // CONSISTENCY(picture-emu): use ParseAnchorBoundsEmu like OLE,
+                // so width/height accept unit-qualified strings ("6cm", "2in")
+                // in addition to bare integer cell counts.
+                var (px, py, pwEmu, phEmu) = ParseAnchorBoundsEmu(properties, "0", "0", "5", "5");
                 var alt = properties.GetValueOrDefault("alt", "");
 
                 var picDrawingsPart = picWorksheet.DrawingsPart
@@ -1132,6 +1110,13 @@ public partial class ExcelHandler
 
                 var picId = picDrawingsPart.WorksheetDrawing.Descendants<XDR.NonVisualDrawingProperties>()
                     .Select(p => (uint?)p.Id?.Value ?? 0u).DefaultIfEmpty(0u).Max() + 1;
+                // CONSISTENCY(picture-emu): split EMU extent into whole-cell
+                // count + sub-cell offset, matching the OLE anchor path.
+                long picWholeCols = pwEmu / EmuPerColApprox;
+                long picRemCols = pwEmu % EmuPerColApprox;
+                long picWholeRows = phEmu / EmuPerRowApprox;
+                long picRemRows = phEmu % EmuPerRowApprox;
+
                 var anchor = new XDR.TwoCellAnchor(
                     new XDR.FromMarker(
                         new XDR.ColumnId(px.ToString()),
@@ -1140,10 +1125,10 @@ public partial class ExcelHandler
                         new XDR.RowOffset("0")
                     ),
                     new XDR.ToMarker(
-                        new XDR.ColumnId((px + pw).ToString()),
-                        new XDR.ColumnOffset("0"),
-                        new XDR.RowId((py + ph).ToString()),
-                        new XDR.RowOffset("0")
+                        new XDR.ColumnId((px + (int)picWholeCols).ToString()),
+                        new XDR.ColumnOffset(picRemCols.ToString()),
+                        new XDR.RowId((py + (int)picWholeRows).ToString()),
+                        new XDR.RowOffset(picRemRows.ToString())
                     ),
                     new XDR.Picture(
                         new XDR.NonVisualPictureProperties(

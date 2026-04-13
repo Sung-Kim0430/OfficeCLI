@@ -18,7 +18,7 @@ public partial class PowerPointHandler
     {
                 if (!properties.TryGetValue("path", out var imgPath)
                     && !properties.TryGetValue("src", out imgPath))
-                    throw new ArgumentException("'path' or 'src' property is required for picture type");
+                    throw new ArgumentException("'src' property is required for picture type");
 
                 var imgSlideMatch = Regex.Match(parentPath, @"^/slide\[(\d+)\]$");
                 if (!imgSlideMatch.Success)
@@ -33,22 +33,43 @@ public partial class PowerPointHandler
                 var imgShapeTree = GetSlide(imgSlidePart).CommonSlideData?.ShapeTree
                     ?? throw new InvalidOperationException("Slide has no shape tree");
 
-                // Resolve image from file/base64/URL
-                var (imgStream, imgPartType) = OfficeCli.Core.ImageSource.Resolve(imgPath);
-                using var imgStreamDispose = imgStream;
+                // Resolve image from file/base64/URL and buffer for
+                // both embedding and dimension sniffing (aspect ratio).
+                var (rawImgStream, imgPartType) = OfficeCli.Core.ImageSource.Resolve(imgPath);
+                using var rawImgDispose = rawImgStream;
+                using var imgStream = new MemoryStream();
+                rawImgStream.CopyTo(imgStream);
+                imgStream.Position = 0;
 
                 // Embed image into slide part
                 var imagePart = imgSlidePart.AddImagePart(imgPartType);
                 imagePart.FeedData(imgStream);
+                imgStream.Position = 0;
                 var imgRelId = imgSlidePart.GetIdOfPart(imagePart);
 
-                // Dimensions (default: 6in x 4in)
-                long cxEmu = 5486400; // 6 inches in EMUs
-                long cyEmu = 3657600; // 4 inches in EMUs
-                if (properties.TryGetValue("width", out var widthStr))
-                    cxEmu = ParseEmu(widthStr);
-                if (properties.TryGetValue("height", out var heightStr))
-                    cyEmu = ParseEmu(heightStr);
+                // Dimensions (default: 6in x 4in, with auto aspect-ratio)
+                // CONSISTENCY(picture-aspect): when only one dimension is
+                // supplied, compute the other from native pixel ratio — same
+                // behavior as WordHandler.AddPicture.
+                bool hasWidth = properties.TryGetValue("width", out var widthStr);
+                bool hasHeight = properties.TryGetValue("height", out var heightStr);
+                long cxEmu = hasWidth ? ParseEmu(widthStr!) : 5486400;  // 6 inches fallback
+                long cyEmu = hasHeight ? ParseEmu(heightStr!) : 3657600; // 4 inches fallback
+
+                if (!hasWidth || !hasHeight)
+                {
+                    var dims = OfficeCli.Core.ImageSource.TryGetDimensions(imgStream);
+                    if (dims is { Width: > 0, Height: > 0 } d)
+                    {
+                        double ratio = (double)d.Height / d.Width;
+                        if (hasWidth && !hasHeight)
+                            cyEmu = (long)(cxEmu * ratio);
+                        else if (!hasWidth && hasHeight)
+                            cxEmu = (long)(cyEmu / ratio);
+                        else // neither supplied — default width, compute height
+                            cyEmu = (long)(cxEmu * ratio);
+                    }
+                }
 
                 // Position (default: centered on slide)
                 var (slideW, slideH) = GetSlideSize();
@@ -182,8 +203,9 @@ public partial class PowerPointHandler
                 if (!mediaSlideMatch.Success)
                     throw new ArgumentException("Media must be added to a slide: /slide[N]");
 
-                if (!properties.TryGetValue("path", out var mediaPath))
-                    throw new ArgumentException("'path' property required for media type");
+                if (!properties.TryGetValue("path", out var mediaPath)
+                    && !properties.TryGetValue("src", out mediaPath))
+                    throw new ArgumentException("'src' property is required for media type");
                 if (!File.Exists(mediaPath))
                     throw new FileNotFoundException($"Media file not found: {mediaPath}");
 
@@ -363,16 +385,8 @@ public partial class PowerPointHandler
     //   display         "icon" (default, sets showAsIcon) or "content"
     private string AddOle(string parentPath, int? index, Dictionary<string, string> properties)
     {
-        // Null guard: dispatch may propagate null props through Add().
         properties ??= new Dictionary<string, string>();
-        if (!properties.TryGetValue("src", out var srcPath)
-            && !properties.TryGetValue("path", out srcPath))
-            throw new ArgumentException("'src' (or 'path') property is required for ole type");
-        if (string.IsNullOrWhiteSpace(srcPath))
-            throw new ArgumentException("'src' property for ole type cannot be empty");
-
-        // Visibly warn on unknown ole props (no structured warning channel
-        // on Add — see OleHelper.WarnOnUnknownOleProps).
+        var srcPath = OfficeCli.Core.OleHelper.RequireSource(properties);
         OfficeCli.Core.OleHelper.WarnOnUnknownOleProps(properties);
 
         var oleSlideMatch = Regex.Match(parentPath, @"^/slide\[(\d+)\]$");
@@ -392,27 +406,10 @@ public partial class PowerPointHandler
         var (embedRelId, _) = OfficeCli.Core.OleHelper.AddEmbeddedPart(oleSlidePart, srcPath, _filePath);
 
         // 2. ProgID (explicit or auto-detected).
-        var progId = properties.GetValueOrDefault("progId")
-            ?? properties.GetValueOrDefault("progid")
-            ?? OfficeCli.Core.OleHelper.DetectProgId(srcPath);
-        OfficeCli.Core.OleHelper.ValidateProgId(progId);
+        var progId = OfficeCli.Core.OleHelper.ResolveProgId(properties, srcPath);
 
         // 3. Icon image part (placeholder PNG or user-supplied).
-        ImagePart oleIconPart;
-        if (properties.TryGetValue("icon", out var iconPath) && !string.IsNullOrWhiteSpace(iconPath))
-        {
-            var (iconStream, iconType) = OfficeCli.Core.ImageSource.Resolve(iconPath);
-            using var _ = iconStream;
-            oleIconPart = oleSlidePart.AddImagePart(iconType);
-            oleIconPart.FeedData(iconStream);
-        }
-        else
-        {
-            oleIconPart = oleSlidePart.AddImagePart(ImagePartType.Png);
-            using var ms = new MemoryStream(OfficeCli.Core.OleHelper.PlaceholderIconPng);
-            oleIconPart.FeedData(ms);
-        }
-        var oleIconRelId = oleSlidePart.GetIdOfPart(oleIconPart);
+        var (_, oleIconRelId) = OfficeCli.Core.OleHelper.CreateIconPart(oleSlidePart, properties);
 
         // 4. Dimensions.
         long oleCx = properties.TryGetValue("width", out var wv)
