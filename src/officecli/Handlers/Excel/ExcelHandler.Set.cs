@@ -2057,6 +2057,11 @@ public partial class ExcelHandler
             return;
         }
 
+        // Normalize reversed ranges (e.g. C5:A1 -> A1:C5) so row/column scans cover
+        // the intended region and sortState@ref stays well-formed (min:max).
+        if (col1 > col2) (col1, col2) = (col2, col1);
+        if (row1 > row2) (row1, row2) = (row2, row1);
+
         var ws = GetSheet(worksheet);
         var sd = ws.GetFirstChild<SheetData>();
         if (sd == null) return;
