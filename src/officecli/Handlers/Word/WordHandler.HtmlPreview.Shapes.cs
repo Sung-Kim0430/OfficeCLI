@@ -287,7 +287,18 @@ public partial class WordHandler
 
             // Crop support: container-based cropping
             var crop = GetCropPercents(drawing);
-            var styleParts = new List<string> { "max-width:100%", "height:auto" };
+            // #7a001: when the image's native width exceeds the page body's
+            // content width, drop `max-width:100%` so the image paints at
+            // native size and overflows the margin the way Word does.
+            // Otherwise `max-width:100%` + explicit width + flex-column parent
+            // can collapse the layout slot to zero.
+            var pgLayout = GetPageLayout();
+            var contentWidthPt = pgLayout.WidthPt - pgLayout.MarginLeftPt - pgLayout.MarginRightPt;
+            var imgWidthPt = widthPx * 72.0 / 96.0; // 96 DPI → pt
+            var overflows = widthPx > 0 && imgWidthPt > contentWidthPt;
+            var styleParts = overflows
+                ? new List<string> { $"width:{imgWidthPt:0.#}pt", "height:auto" }
+                : new List<string> { "max-width:100%", "height:auto" };
             if (!string.IsNullOrEmpty(floatCss)) styleParts.Add(floatCss);
 
             // Picture effects from pic:spPr — rotation, flip, border, shadow

@@ -1634,7 +1634,8 @@ public partial class WordHandler
         .wg p {{ padding: 0; margin: 0.05em 0; }}
         table.borderless {{ border: none; }}
         table.borderless td, table.borderless th {{ border: none; padding: 2px 6px; }}
-        th, td {{ border: none; padding: 3pt 5.4pt; text-align: inherit; vertical-align: top; }}
+        th, td {{ border: none; padding: 3pt 5.4pt; text-align: inherit; vertical-align: top; break-inside: auto; }}
+        tr {{ break-inside: auto; }}
         th {{ font-weight: 600; }}
         @media print {{ body {{ background: white; padding: 0; }}
             .page {{ box-shadow: none; margin: 0; max-width: none; transform: none !important; }}

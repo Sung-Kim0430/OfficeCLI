@@ -194,7 +194,10 @@ public partial class WordHandler
         // Footer typically contains: <span ...>1</span> where "1" is the cached PAGE field value
         // We replace single-digit page numbers in the footer with a placeholder for per-page substitution
         var footerHasPageNum = footerHtml.Contains("PAGE") || !string.IsNullOrEmpty(footerHtml);
-        var pageNumPattern = new Regex(@"(<span[^>]*>)\s*\d+\s*(</span>)");
+        // Match a single-digit-only run rendered as either <span> or <p>.
+        // The footer's PAGE field is typically a single run; the tag name
+        // depends on whether the run carries rPr styling.
+        var pageNumPattern = new Regex(@"(<(?:span|p)[^>]*>)\s*\d+\s*(</(?:span|p)>)");
         var footerTemplate = pageNumPattern.Replace(footerHtml, "$1<!--PAGE_NUM-->$2", 1);
         // Second single-digit match = NUMPAGES in "Page X of Y"
         var footerTemplateWithTotal = pageNumPattern.Replace(footerTemplate, "$1<!--NUM_PAGES-->$2", 1);
@@ -219,6 +222,11 @@ public partial class WordHandler
         var sections = CollectSections(body);
         var sectRegex = new Regex(@"<!--SECT:(\d+)-->");
         var activeLayout = pgLayout;
+        // #10: per-section pgNumType — w:start resets the displayed page
+        // counter at the section boundary; w:fmt swaps the number format
+        // (decimalZero, upperRoman, …) applied to PAGE/NUMPAGES substitutions.
+        int displayedPageNum = 0;
+        string displayedFmt = "decimal";
         for (int i = 0; i < pageList.Count; i++)
         {
             var pgContent = pageList[i];
@@ -227,10 +235,21 @@ public partial class WordHandler
             {
                 var lastIdx = int.Parse(sectMatches[^1].Groups[1].Value);
                 if (lastIdx >= 0 && lastIdx < sections.Count)
+                {
                     activeLayout = GetPageLayoutFor(sections[lastIdx]);
+                    var pgNumType = sections[lastIdx].GetFirstChild<PageNumberType>();
+                    if (pgNumType?.Start?.Value is int startVal)
+                        displayedPageNum = startVal - 1; // will ++ below
+                    // Open XML SDK v3+: Enum.ToString() returns a
+                    // debug string like "NumberFormatValues { }"; use
+                    // InnerText to get the XML-level token ("decimalZero").
+                    if (pgNumType?.Format?.InnerText is { Length: > 0 } fmtStr)
+                        displayedFmt = fmtStr;
+                }
                 pgContent = sectRegex.Replace(pgContent, "");
                 pageList[i] = pgContent;
             }
+            displayedPageNum++;
             // Per-page inline style carries full geometry (width / min-height
             // / padding) so sections with different page sizes or margins
             // override the base .page CSS rules.
@@ -254,8 +273,9 @@ public partial class WordHandler
             if (i == pageList.Count - 1 && !string.IsNullOrEmpty(endnotesHtml))
                 sb.Append(endnotesHtml);
             sb.Append("</div>");
+            var pageNumStr = OfficeCli.Core.WordNumFmtRenderer.Render(displayedPageNum, displayedFmt);
             sb.Append(footerTemplate
-                .Replace("<!--PAGE_NUM-->", (i + 1).ToString())
+                .Replace("<!--PAGE_NUM-->", pageNumStr)
                 .Replace("<!--NUM_PAGES-->", pageList.Count.ToString()));
             sb.AppendLine("</div>");
             sb.AppendLine("</div>");
@@ -862,6 +882,9 @@ public partial class WordHandler
                 if (!string.IsNullOrWhiteSpace(p.InnerText)) return true;
                 if (p.Descendants<Drawing>().Any()) return true;
                 if (p.Descendants<FieldChar>().Any() || p.Descendants<SimpleField>().Any()) return true;
+                // VML watermark (<v:pict>) is visible content even though
+                // it carries no plain text and no DrawingML Drawing element.
+                if (p.Descendants<Picture>().Any()) return true;
             }
         }
         return false;
@@ -875,10 +898,49 @@ public partial class WordHandler
         foreach (var child in hf.ChildElements)
         {
             if (child is Paragraph para)
+            {
+                // Legacy VML watermark: a <v:shape> in a <w:pict> with
+                // a <v:textpath> child carrying the watermark string
+                // (DRAFT / CONFIDENTIAL / …). DrawingML text boxes are
+                // already handled by the shape renderer; VML is a
+                // parallel deprecated format we must detect by name.
+                var watermarkText = ExtractVmlWatermarkText(para);
+                if (watermarkText != null)
+                {
+                    sb.Append($"<span class=\"vml-watermark\" style=\"position:absolute;" +
+                              "top:50%;left:50%;transform:translate(-50%,-50%) rotate(-45deg);" +
+                              "color:#d0d0d0;font-size:7em;font-weight:bold;" +
+                              "z-index:0;pointer-events:none;white-space:nowrap;" +
+                              "user-select:none\">");
+                    sb.Append(HtmlEncode(watermarkText));
+                    sb.Append("</span>");
+                    continue;
+                }
                 RenderParagraphHtml(sb, para);
+            }
             else if (child is Table tbl)
                 RenderTableHtml(sb, tbl);
         }
+    }
+
+    /// <summary>
+    /// Return the watermark text from a legacy VML <c>w:pict &gt; v:shape &gt;
+    /// v:textpath</c> structure, or null if the paragraph does not carry one.
+    /// </summary>
+    private static string? ExtractVmlWatermarkText(Paragraph para)
+    {
+        foreach (var pict in para.Descendants<Picture>())
+        {
+            var shape = pict.Descendants().FirstOrDefault(e => e.LocalName == "shape"
+                && e.NamespaceUri == "urn:schemas-microsoft-com:vml");
+            if (shape == null) continue;
+            var textPath = shape.Descendants().FirstOrDefault(e => e.LocalName == "textpath"
+                && e.NamespaceUri == "urn:schemas-microsoft-com:vml");
+            if (textPath == null) continue;
+            var str = textPath.GetAttributes().FirstOrDefault(a => a.LocalName == "string").Value;
+            if (!string.IsNullOrWhiteSpace(str)) return str;
+        }
+        return null;
     }
 
     // ==================== Body Rendering ====================
